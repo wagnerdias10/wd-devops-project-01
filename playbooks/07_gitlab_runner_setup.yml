@@ -1,0 +1,224 @@
+# ~/ansible_devops_project/playbooks/07_gitlabrunner_setup.yml
+---
+- name: Instalar e Configurar GitLab Runner no Kubernetes
+  hosts: k3s_master
+  become: yes
+
+  vars:
+    gitlab_url: "https://gitlab.wd.local"
+    gitlab_runner_namespace: "gitlab-runner"
+    runner_registration_token: "glrt-FHxBHzgrA8ZGmikMKv39Dm86MQp0OjEKdToyCw.01.120f67uph"
+    gitlab_ca_cert_local: "{{ playbook_dir }}/../files/wd-root-ca.crt"
+
+  tasks:
+    - name: Exibir caminho do certificado (debug)
+      ansible.builtin.debug:
+        msg: "Procurando certificado em: {{ gitlab_ca_cert_local }}"
+
+    - name: Verificar se certificado CA existe localmente
+      ansible.builtin.stat:
+        path: "{{ gitlab_ca_cert_local }}"
+      delegate_to: localhost
+      register: ca_cert_check
+      become: no
+
+    - name: Exibir resultado da verificação (debug)
+      ansible.builtin.debug:
+        msg: "Certificado existe: {{ ca_cert_check.stat.exists }}"
+
+    - name: Falhar se certificado não existir
+      ansible.builtin.fail:
+        msg: "Certificado CA não encontrado em {{ gitlab_ca_cert_local }}"
+      when: not ca_cert_check.stat.exists
+
+    - name: Verificar se Helm está instalado
+      ansible.builtin.command: helm version --short
+      register: helm_check
+      changed_when: false
+      failed_when: false
+
+    - name: Instalar Helm se necessário
+      ansible.builtin.shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+      when: helm_check.rc != 0
+
+    - name: Verificar biblioteca Python kubernetes
+      ansible.builtin.command: python3 -c "import kubernetes"
+      register: k8s_lib_check
+      changed_when: false
+      failed_when: false
+
+    - name: Instalar/Atualizar biblioteca kubernetes
+      ansible.builtin.pip:
+        name: kubernetes>=24.2.0
+        executable: pip3
+        state: present
+      when: k8s_lib_check.rc != 0
+
+    - name: Adicionar repositório Helm do GitLab
+      kubernetes.core.helm_repository:
+        name: gitlab
+        repo_url: https://charts.gitlab.io
+        state: present
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Atualizar repositórios Helm
+      ansible.builtin.command: helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Criar namespace gitlab-runner
+      kubernetes.core.k8s:
+        name: "{{ gitlab_runner_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+    - name: Criar Secret com certificado CA do GitLab
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gitlab-ca-cert
+            namespace: "{{ gitlab_runner_namespace }}"
+          type: Opaque
+          stringData:
+            gitlab.wd.local.crt: "{{ lookup('file', gitlab_ca_cert_local) }}"
+
+    - name: Exibir confirmação de certificado
+      ansible.builtin.debug:
+        msg: "✅ Certificado CA carregado de {{ gitlab_ca_cert_local }}"
+
+    - name: Exibir informações de instalação
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "📋 INSTALANDO GITLAB RUNNER"
+          - "=========================================="
+          - "GitLab URL: {{ gitlab_url }}"
+          - "Namespace: {{ gitlab_runner_namespace }}"
+          - "Token: {{ runner_registration_token[:15] }}..."
+          - "Certificado CA: {{ gitlab_ca_cert_local }}"
+          - "=========================================="
+
+    - name: Deploy GitLab Runner via Helm
+      kubernetes.core.helm:
+        name: gitlab-runner
+        chart_ref: gitlab/gitlab-runner
+        release_namespace: "{{ gitlab_runner_namespace }}"
+        create_namespace: no
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        update_repo_cache: yes
+        wait: yes
+        wait_timeout: 10m
+        values:
+          gitlabUrl: "{{ gitlab_url }}"
+          runnerToken: "{{ runner_registration_token }}"
+          certsSecretName: gitlab-ca-cert
+          rbac:
+            create: true
+
+          runners:
+            config: |
+              [[runners]]
+                [runners.kubernetes]
+                  namespace = "{{ gitlab_runner_namespace }}"
+                  image = "ubuntu:22.04"
+                  privileged = true
+
+                  [[runners.kubernetes.volumes.empty_dir]]
+                    name = "docker-certs"
+                    mount_path = "/certs/client"
+                    medium = "Memory"
+
+            privileged: true
+            tags: "k3s,docker,kubernetes"
+            runUntagged: false
+            locked: false
+
+          resources:
+            limits:
+              memory: 256Mi
+              cpu: 200m
+            requests:
+              memory: 128Mi
+              cpu: 100m
+      register: helm_deploy
+
+    - name: Exibir status da instalação
+      ansible.builtin.debug:
+        msg: "{{ '✅ GitLab Runner instalado com sucesso!' if not helm_deploy.failed else '❌ Falha na instalação' }}"
+
+    - name: Aguardar 30 segundos para runner iniciar
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Listar pods do GitLab Runner
+      ansible.builtin.command: kubectl get pods -n {{ gitlab_runner_namespace }}
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: runner_pods_list
+      changed_when: false
+
+    - name: Exibir pods criados
+      ansible.builtin.debug:
+        msg: "{{ runner_pods_list.stdout_lines }}"
+
+    - name: Obter logs do runner
+      ansible.builtin.shell: |
+        kubectl logs -n {{ gitlab_runner_namespace }} \
+          -l app=gitlab-runner \
+          --tail=100 \
+      register: runner_logs
+      changed_when: false
+
+    - name: Exibir logs do runner
+      ansible.builtin.debug:
+        msg: "{{ runner_logs.stdout_lines }}"
+
+    - name: Verificar se há erros de certificado nos logs
+      ansible.builtin.set_fact:
+        cert_error_found: "{{ 'x509' in runner_logs.stdout or 'certificate' in runner_logs.stdout }}"
+
+    - name: Alerta se ainda houver erro de certificado
+      ansible.builtin.debug:
+        msg: "⚠️ ATENÇÃO: Ainda há menções a certificado nos logs. Verifique manualmente."
+      when: cert_error_found
+
+    - name: Confirmação se não houver erro de certificado
+      ansible.builtin.debug:
+        msg: "✅ Nenhum erro de certificado detectado nos logs!"
+      when: not cert_error_found
+
+    - name: Exibir informações finais
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "✅ GITLAB RUNNER CONFIGURADO!"
+          - "=========================================="
+          - ""
+          - "📋 INFORMAÇÕES:"
+          - "  Namespace: {{ gitlab_runner_namespace }}"
+          - "  GitLab URL: {{ gitlab_url }}"
+          - "  Certificado CA: ✅ Configurado"
+          - "  Tags: k3s, docker, kubernetes"
+          - ""
+          - "🔍 VERIFICAR REGISTRO:"
+          - "  1. Acesse: {{ gitlab_url }}/admin/runners"
+          - "  2. Procure por runner com tags: k3s, docker, kubernetes"
+          - "  3. Status deve ser: 'online' (verde)"
+          - ""
+          - "📝 COMANDOS ÚTEIS:"
+          - "  kubectl get pods -n {{ gitlab_runner_namespace }}"
+          - "  kubectl logs -n {{ gitlab_runner_namespace }} -l app=gitlab-runner -f"
+          - "  kubectl describe pod -n {{ gitlab_runner_namespace }} <pod-name>"
+          - ""
+          - "=========================================="

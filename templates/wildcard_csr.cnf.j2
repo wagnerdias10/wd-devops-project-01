@@ -1,0 +1,31 @@
+# wildcard_csr.cnf.j2
+# Configuracao para a Criacao do CSR do Certificado Wildcard
+[ req ]
+default_bits        = 4096
+default_md          = sha256
+default_keyfile     = /etc/nginx/ssl/wildcard.{{ internal_domain }}.key
+distinguished_name  = req_distinguished_name
+req_extensions      = v3_req
+string_mask         = utf8only
+
+[ req_distinguished_name ]
+countryName                     = Country Name (2 letter code)
+countryName_default             = {{ pki_country }}
+stateOrProvinceName             = State or Province Name (full name)
+stateOrProvinceName_default     = {{ pki_state }}
+localityName                    = Locality Name (eg, city)
+localityName_default            = {{ pki_locality }}
+0.organizationName              = Organization Name (eg, company)
+0.organizationName_default      = {{ pki_organization }}
+organizationalUnitName          = Organizational Unit Name (eg, section)
+organizationalUnitName_default  = {{ pki_organizational_unit }}
+commonName                      = Common Name (e.g. server FQDN or YOUR name)
+commonName_default              = {{ pki_wildcard_cn }}
+
+[ v3_req ] # Extensoes para o CSR
+subjectAltName = @alt_names
+
+[ alt_names ] # Lista de SANs para o CSR
+{% for san_entry in pki_wildcard_sans_list %}
+{{ san_entry }}
+{% endfor %}

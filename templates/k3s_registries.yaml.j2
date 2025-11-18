@@ -1,0 +1,13 @@
+# ~/ansible_devops_project/templates/k3s_registries.yaml.j2
+# Configuracao para que o K3s confie no GitLab Container Registry interno
+mirrors:
+  "gitlab.{{ internal_domain }}:443": # Seu dominio GitLab para o registry
+    endpoint:
+      - "https://gitlab.{{ internal_domain }}:443"
+configs:
+  "gitlab.{{ internal_domain }}:443":
+    tls:
+      ca_file: /usr/local/share/ca-certificates/wd-root-ca.crt # Caminho para sua Root CA distribuda
+    auth:
+      username: "{{ gitlab_pat_username }}" # Usuário para autenticacao
+      password: "{{ gitlab_pat_token }}"   # Personal Access Token (PAT)

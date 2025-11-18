@@ -1,0 +1,105 @@
+stages:
+  - build
+  - test
+  - security
+  - deploy-gitops
+
+variables:
+  DOCKER_IMAGE_NAME: gitlab.wd.local/wagner/wd-nodejs-docker
+  DOCKER_IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  GIT_STRATEGY: clone
+  KUBERNETES_NAMESPACE: wd-app-env
+
+# --- 🐳 Build Stage ---
+build-docker-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  before_script:
+    - echo "Building Docker image with Kaniko..."
+    - mkdir -p /kaniko/.docker
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+      --destination "${DOCKER_IMAGE_NAME}:latest"
+      --skip-tls-verify=true
+      --verbosity=info
+    - echo "Image pushed:${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+  tags:
+    - kubernetes
+  only:
+    - main
+
+# --- 🧪 Test Stage ---
+unit-integration-tests:
+  stage: test
+  image: node:18-alpine
+  script:
+    - echo "Running unit and integration tests..."
+    - npm install
+    - npm test
+  artifacts:
+    paths:
+      - coverage/lcov.info
+    reports:
+      junit: junit.xml
+  tags:
+    - kubernetes
+  only:
+    - main
+
+# —- 🔒 Security Stage —-
+sonarqube-analysis:
+  stage: security
+  image: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_HOST_URL: "https://sonarqube.wd.local"
+    SONAR_TOKEN: "$SONAR_TOKEN"
+    SONAR_PROJECT_KEY: "wd-nodejs-docker"
+    SONAR_SOURCES: "."
+    SONAR_BRANCH: "$CI_COMMIT_REF_NAME"
+  script:
+    - echo "Running SonarQube analysis..."
+    - >
+      sonar-scanner
+      -Dsonar.projectKey=$SONAR_PROJECT_KEY
+      -Dsonar.projectName=$SONAR_PROJECT_KEY
+      -Dsonar.sources=$SONAR_SOURCES
+      -Dsonar.host.url=$SONAR_HOST_URL
+      -Dsonar.login=$SONAR_TOKEN
+      -Dsonar.branch.name=$SONAR_BRANCH
+      -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+  allow_failure: false
+  tags:
+    - kubernetes
+  only:
+    - main
+
+# —- 🚀 Deploy-GitOps Stage —-
+update-gitops-repo:
+  stage: deploy-gitops
+  image: alpine/git:latest
+  before_script:
+    - git config user.name "GitLab CI/CD"
+    - git config user.email "gitlab-ci@wd.local"
+    - apk add --no-cache yq
+  script:
+    - echo "Cloning GitOps repository..."
+    - git clone https://oauth2:$GITLAB_TOKEN@gitlab.wd.local/wagner/gitops-repo.git
+    - cd gitops-repo
+    - echo "Updating image tag in kubernetes/deployment.yaml to ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}..."
+    - yq eval ".spec.template.spec.containers[0].image = \"${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}\"" -i kubernetes/deployment.yaml
+    - echo "Updated deployment.yaml content:"
+    - cat kubernetes/deployment.yaml | grep image:
+    - git add kubernetes/deployment.yaml
+    - git commit -m "CI/CD:Update image to ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
+    - git push origin main
+  variables:
+    GITLAB_TOKEN: $GITLAB_TOKEN
+  tags:
+    - kubernetes
+  only:
+    - main

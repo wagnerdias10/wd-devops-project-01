@@ -1,0 +1,16 @@
+# SonarQube properties
+sonar.jdbc.username=sonar
+sonar.jdbc.password={{ sonarqube_db_password }}
+sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube
+
+# Web configuration
+sonar.web.host=0.0.0.0
+sonar.web.port=9000
+sonar.web.javaOpts=-Xmx512m -Xms128m -XX:+HeapDumpOnOutOfMemoryError
+
+# Elasticsearch configuration
+sonar.search.javaOpts=-Xmx512m -Xms512m -XX:MaxDirectMemorySize=256m -XX:+HeapDumpOnOutOfMemoryError
+
+# Path settings
+sonar.path.data=/opt/sonarqube/data
+sonar.path.temp=/opt/sonarqube/temp

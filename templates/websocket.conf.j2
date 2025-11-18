@@ -1,0 +1,18 @@
+# WebSocket support configuration
+# Necessario para muitos servicos web modernos (Rancher, GitLab)
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+# Protocol detection configuration (para X-Forwarded-Proto)
+map $http_x_forwarded_proto $proxy_x_forwarded_proto {
+    default $http_x_forwarded_proto;
+    '' $scheme;
+}
+
+# Forwarded port configuration (para X-Forwarded-Port)
+map $http_x_forwarded_port $proxy_x_forwarded_port {
+    default $http_x_forwarded_port;
+    '' $server_port;
+}

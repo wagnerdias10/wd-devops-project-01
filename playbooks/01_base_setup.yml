@@ -1,0 +1,130 @@
+# ~/ansible_devops_project/playbooks/01_base_setup.yml
+---
+- name: Configurao Base Comum para Todas as VMs
+  hosts: all_vms
+  become: true
+  gather_facts: false 
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml 
+
+  pre_tasks:
+    - name: Aguardar que as VMs estejam acessveis via SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300 
+
+    - name: Coletar fatos aps a conexo (necessrio para variveis como ansible_distribution_release)
+      ansible.builtin.setup:
+
+    - name: Garantir que o diretrio .ssh existe para o usurio Ansible
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.ssh"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Distribuir chave pblica SSH do Ansible Control para authorized_keys (garante acesso idempotente)
+      ansible.builtin.authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ lookup('file', ansible_ssh_private_key_file + '.pub') }}"
+        manage_dir: true 
+
+  tasks:
+    - name: Atualizar cache de pacotes e fazer upgrade do sistema
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        autoclean: yes
+        autoremove: yes
+      register: apt_update_result
+      until: apt_update_result is success 
+      retries: 3
+      delay: 5
+
+    - name: Instalar ferramentas essenciais
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+          - git
+          - nano
+          - tree
+          - htop
+          - net-tools
+          - openssl
+          - apt-transport-https
+          - ca-certificates
+          - software-properties-common
+          - gnupg
+          - lsb-release
+          - python3-pip
+          - python3-venv
+          - python3-apt
+        state: present
+
+    - name: Configurar /etc/hosts para resoluo interna (idempotente)
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: |
+              "^{{ item.ip }}\s+{{ item.hostname }}.*$" # regex para evitar duplicatas e permitir atualizaes
+        line: "{{ item.ip }} {{ item.hostname }} {{ item.hostname.split('.')[0] }}"
+        state: present
+      loop:
+        - { ip: "{{ ansible_control_ip }}", hostname: "ansible.{{ internal_domain }}" }
+        - { ip: "{{ nginx_proxy_ip }}", hostname: "nginx.{{ internal_domain }}" }
+        - { ip: "{{ gitlab_server_ip }}", hostname: "gitlab.{{ internal_domain }}" }
+        - { ip: "{{ rancher_server_ip }}", hostname: "rancher.{{ internal_domain }}" }
+        - { ip: "{{ k3s_master_ip }}", hostname: "k3s-master.{{ internal_domain }}" }
+        - { ip: "{{ k3s_worker_01_ip }}", hostname: "k3s-worker-01.{{ internal_domain }}" }
+        - { ip: "{{ k3s_worker_02_ip }}", hostname: "k3s-worker-02.{{ internal_domain }}" }
+        - { ip: "{{ jenkins_server_ip }}", hostname: "jenkins.{{ internal_domain }}" }
+        - { ip: "{{ sonarqube_server_ip }}", hostname: "sonarqube.{{ internal_domain }}" }
+
+    - name: Configurar systemd-resolved para usar DNS interno e externo
+      ansible.builtin.template:
+        src: ../templates/resolved.conf.j2
+        dest: /etc/systemd/resolved.conf
+        mode: '0644'
+      notify: Reiniciar systemd-resolved
+
+    - name: Criar link simblico para resolv.conf (garante que systemd-resolved seja o provedor de DNS)
+      ansible.builtin.file:
+        src: /run/systemd/resolve/stub-resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true 
+      notify: Reiniciar systemd-resolved
+
+    - name: Desabilitar swap (essencial para Kubernetes)
+      ansible.builtin.command: swapoff -a
+      when: "'k3s_cluster' in group_names" 
+      changed_when: false 
+
+    - name: Remover entrada de swap do /etc/fstab (permanente)
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '.*swap.*'
+        state: absent
+      when: "'k3s_cluster' in group_names"
+
+    - name: Verificar se um reboot  necessrio (aps atualizaes de kernel, por exemplo)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+      when: ansible_os_family == "Debian"
+
+    - name: Reiniciar VMs (se necessrio)
+      ansible.builtin.reboot:
+        reboot_timeout: 600 
+      when: reboot_required_file.stat.exists is defined and reboot_required_file.stat.exists
+
+  handlers:
+    - name: Reiniciar systemd-resolved
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        state: restarted
+        daemon_reload: yes 
+      listen: "Reiniciar systemd-resolved"

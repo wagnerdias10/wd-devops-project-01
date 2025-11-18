@@ -1,0 +1,74 @@
+# ~/ansible_devops_project/group_vars/all.yml
+---
+# Variveis de Configurao Global
+internal_domain: "wd.local"
+ansible_user: "wagnerdias"
+ansible_become: true
+ansible_become_method: sudo
+ansible_python_interpreter: /usr/bin/python3
+ansible_ssh_private_key_file: "/home/wagnerdias/.ssh/id_rsa"
+
+# Carrega variveis sensveis do vault
+# NO FAÇA COMMIT DE ARQUIVOS COM SENHAS EM TEXTO CLARO!
+# Para usar, crie group_vars/secrets.yml e criptografe com ansible-vault
+# Ex: ansible-vault create group_vars/secrets.yml
+#    (coloque suas senhas l)
+# E ao executar: ansible-playbook --ask-vault-pass ...
+# Ou use um arquivo de senha do vault: ansible-playbook --vault-password-file ~/.vault_pass ...
+ansible_vault_file: group_vars/secrets.yml # Este  o arquivo que contm as credenciais
+
+# Endereos IP das VMs (SUBSTITUA PELOS SEUS IPs REAIS)
+ansible_control_ip: "192.168.204.153"
+nginx_proxy_ip: "192.168.204.146"
+gitlab_server_ip: "192.168.204.149"
+rancher_server_ip: "192.168.204.130" # IP do servidor Rancher Standalone
+k3s_master_ip: "192.168.204.150"
+k3s_worker_01_ip: "192.168.204.148"
+k3s_worker_02_ip: "192.168.204.151"
+jenkins_server_ip: "192.168.204.147"
+sonarqube_server_ip: "192.168.204.154"
+
+# Credenciais e Tokens (AGORA PROTEGIDAS NO secrets.yml)
+gitlab_pat_username: "wagnerdias" # Seu usurio GitLab para o PAT (pode no ser sensvel o suficiente para o vault)
+
+# Configuraes de Rede
+dns_servers:
+  - "192.168.15.179" # Seu DNS local (Windows Server)
+  - "8.8.8.8"
+  - "8.8.4.4"
+
+# Configuraes de Certificados (PKI Interna)
+pki_country: "BR"
+pki_state: "Sao Paulo"
+pki_locality: "Sao Paulo"
+pki_organization: "WD Internal"
+pki_organizational_unit: "IT"
+pki_root_cn: "WD Root CA Internal"
+pki_intermediate_cn: "WD Intermediate CA Internal"
+pki_wildcard_cn: "*.{{ internal_domain }}"
+pki_root_validity_days: 3650
+pki_intermediate_validity_days: 1825
+pki_wildcard_validity_days: 365
+pki_crl_days: 30
+
+# Subject Alternative Names para o certificado wildcard (inclui todos os servios e IPs)
+pki_wildcard_sans_list:
+  - "DNS.1 = *.{{ internal_domain }}"
+  - "DNS.2 = {{ internal_domain }}"
+  - "DNS.3 = nginx.{{ internal_domain }}"
+  - "DNS.4 = gitlab.{{ internal_domain }}"
+  - "DNS.5 = rancher.{{ internal_domain }}"
+  - "DNS.6 = jenkins.{{ internal_domain }}"
+  - "DNS.7 = sonarqube.{{ internal_domain }}"
+  - "DNS.8 = k3s-master.{{ internal_domain }}"
+  - "DNS.9 = k3s-worker-01.{{ internal_domain }}"
+  - "DNS.10 = k3s-worker-02.{{ internal_domain }}"
+  - "DNS.11 = dashboard.{{ internal_domain }}"
+  - "IP.1 = {{ nginx_proxy_ip }}"
+
+# Configuraes de porta interna para servios (NGINX far o proxy para estas portas HTTP)
+gitlab_workhorse_port: 8181
+gitlab_registry_port: 5050
+jenkins_internal_port: 8080
+sonarqube_internal_port: 9000
+sonarqube_version: "9.9.0.65466"

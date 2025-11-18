@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevOps Platform - {{ internal_domain }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #8b5cf6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --dark: #1e293b;
+            --light: #f8fafc;
+            --gray: #64748b;
+            --border: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--dark);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            animation: fadeInDown 0.8s ease;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            letter-spacing: -0.5px;
+        }
+
+        .header .subtitle {
+            font-size: 1.25rem;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 300;
+        }
+
+        .header .domain {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 6px 16px;
+            border-radius: 20px;
+            margin-top: 15px;
+            font-size: 0.95rem;
+            color: white;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        /* Service Grid */
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+            margin-bottom: 40px;
+        }
+
+        /* Service Card */
+        .service-card {
+            background: white;
+            border-radius: 16px;
+            padding: 32px 28px;
+            box-shadow: var(--shadow-lg);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
+            animation: fadeInUp 0.8s ease backwards;
+        }
+
+        .service-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .service-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .service-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        }
+
+        .service-card:nth-child(1) { animation-delay: 0.1s; }
+        .service-card:nth-child(2) { animation-delay: 0.2s; }
+        .service-card:nth-child(3) { animation-delay: 0.3s; }
+        .service-card:nth-child(4) { animation-delay: 0.4s; }
+        .service-card:nth-child(5) { animation-delay: 0.5s; }
+        .service-card:nth-child(6) { animation-delay: 0.6s; }
+
+        .service-icon {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 20px;
+            font-size: 2.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+        }
+
+        .service-card h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--dark);
+            margin-bottom: 8px;
+        }
+
+        .service-card p {
+            color: var(--gray);
+            font-size: 0.95rem;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+
+        .service-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.95rem;
+            padding: 10px 20px;
+            border-radius: 8px;
+            background: rgba(37, 99, 235, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .service-link:hover {
+            background: var(--primary);
+            color: white;
+            transform: translateX(4px);
+        }
+
+        .service-link::after {
+            content: '→';
+            font-size: 1.2rem;
+            transition: transform 0.3s ease;
+        }
+
+        .service-link:hover::after {
+            transform: translateX(4px);
+        }
+
+        /* Status Badge */
+        .status-badge {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        /* Footer */
+        .footer {
+            background: white;
+            border-radius: 16px;
+            padding: 28px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            animation: fadeInUp 0.8s ease 0.7s backwards;
+        }
+
+        .footer p {
+            color: var(--gray);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-top: 16px;
+        }
+
+        .footer-links a {
+            color: var(--gray);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.3s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--primary);
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 15px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .header .subtitle {
+                font-size: 1rem;
+            }
+
+            .services-grid {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .service-card {
+                padding: 24px 20px;
+            }
+
+            .service-icon {
+                width: 56px;
+                height: 56px;
+                font-size: 2rem;
+            }
+
+            .footer-links {
+                flex-direction: column;
+                gap: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🚀 DevOps Platform</h1>
+            <p class="subtitle">Ambiente integrado de desenvolvimento e operações</p>
+            <span class="domain">{{ internal_domain }}</span>
+        </header>
+
+        <!-- Services Grid -->
+        <div class="services-grid">
+            <!-- GitLab -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">🦊</div>
+                <h3>GitLab</h3>
+                <p>Controle de versão, CI/CD integrado e registro de containers</p>
+                <a href="https://gitlab.{{ internal_domain }}" class="service-link">
+                    Acessar GitLab
+                </a>
+            </div>
+
+            <!-- Rancher -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">🐮</div>
+                <h3>Rancher</h3>
+                <p>Gerenciamento completo de clusters Kubernetes</p>
+                <a href="https://rancher.{{ internal_domain }}" class="service-link">
+                    Acessar Rancher
+                </a>
+            </div>
+
+            <!-- Jenkins -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">🔧</div>
+                <h3>Jenkins</h3>
+                <p>Automação avançada de pipelines CI/CD</p>
+                <a href="https://jenkins.{{ internal_domain }}" class="service-link">
+                    Acessar Jenkins
+                </a>
+            </div>
+
+            <!-- SonarQube -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">📊</div>
+                <h3>SonarQube</h3>
+                <p>Análise estática e qualidade de código</p>
+                <a href="https://sonarqube.{{ internal_domain }}" class="service-link">
+                    Acessar SonarQube
+                </a>
+            </div>
+
+            <!-- Grafana -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">📈</div>
+                <h3>Grafana</h3>
+                <p>Dashboards e visualização de métricas em tempo real</p>
+                <a href="https://grafana.{{ internal_domain }}" class="service-link">
+                    Acessar Grafana
+                </a>
+            </div>
+
+            <!-- ArgoCD -->
+            <div class="service-card">
+                <span class="status-badge">Online</span>
+                <div class="service-icon">🔄</div>
+                <h3>ArgoCD</h3>
+                <p>GitOps declarativo para entrega contínua no Kubernetes</p>
+                <a href="https://argocd.{{ internal_domain }}" class="service-link">
+                    Acessar ArgoCD
+                </a>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p><strong>DevOps Platform</strong> &copy; {{ ansible_date_time.year }}</p>
+            <p>Infraestrutura gerenciada por Ansible • K3s • Traefik</p>
+            <div class="footer-links">
+                <a href="https://gitlab.{{ internal_domain }}/help">Documentação</a>
+                <a href="https://rancher.{{ internal_domain }}/dashboard">Kubernetes Dashboard</a>
+                <a href="https://grafana.{{ internal_domain }}/d/kubernetes">Monitoramento</a>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

@@ -1,0 +1,250 @@
+# ~/ansible_devops_project/playbooks/08_jenkins_setup.yml
+---
+- name: Instalar e Configurar Jenkins
+  hosts: jenkins_server
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:
+    - name: Instalar dependências do Jenkins
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jdk
+          - ca-certificates
+          - curl
+          - gnupg
+          - software-properties-common
+        state: present
+
+    - name: Criar diretório para chaves GPG
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Baixar e instalar chave GPG do Jenkins (método moderno)
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | gpg --dearmor -o /etc/apt/keyrings/jenkins.gpg
+        creates: /etc/apt/keyrings/jenkins.gpg
+
+    - name: Adicionar repositório Jenkins Stable
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/jenkins.gpg] https://pkg.jenkins.io/debian-stable binary/"
+        state: present
+        filename: jenkins
+
+    - name: Atualizar cache de pacotes após adicionar repositório Jenkins
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Instalar Jenkins
+      ansible.builtin.apt:
+        name: jenkins
+        state: present
+        update_cache: yes
+      register: jenkins_install_result
+      until: jenkins_install_result is success
+      retries: 5
+      delay: 10
+
+    - name: Aguardar serviço Jenkins estar disponível
+      ansible.builtin.systemd:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Criar diretório de backup para configuração do Jenkins
+      ansible.builtin.file:
+        path: /etc/default/backup
+        state: directory
+        mode: '0755'
+
+    - name: Fazer backup do arquivo de configuração padrão do Jenkins
+      ansible.builtin.copy:
+        src: /etc/default/jenkins
+        dest: /etc/default/backup/jenkins.orig-{{ ansible_date_time.iso8601_basic_short }}
+        remote_src: true
+        force: false
+      check_mode: false
+
+    - name: Configurar Jenkins para usar NGINX Reverse Proxy
+      ansible.builtin.lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JENKINS_PORT='
+        line: 'JENKINS_PORT={{ jenkins_internal_port }}'
+        state: present
+      notify: Reiniciar Jenkins
+
+    - name: Configurar HTTP_PORT
+      ansible.builtin.lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^HTTP_PORT='
+        line: 'HTTP_PORT={{ jenkins_internal_port }}'
+        state: present
+      notify: Reiniciar Jenkins
+
+    - name: Configurar JENKINS_ARGS para proxy reverso
+      ansible.builtin.lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JENKINS_ARGS='
+        line: 'JENKINS_ARGS="--webroot=/var/cache/jenkins/war --httpListenAddress=127.0.0.1 --httpPort={{ jenkins_internal_port }} --prefix=/jenkins"'
+        state: present
+      notify: Reiniciar Jenkins
+
+    - name: Configurar Jenkins para aceitar proxy reverso
+      ansible.builtin.lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JENKINS_PREFIX='
+        line: 'JENKINS_PREFIX=/jenkins'
+        state: present
+      notify: Reiniciar Jenkins
+
+    - name: Criar diretório para configurações extras
+      ansible.builtin.file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Configurar admin password via Groovy (método alternativo)
+      ansible.builtin.copy:
+        dest: /var/lib/jenkins/init.groovy.d/security.groovy
+        content: |
+          #!groovy
+
+          import jenkins.model.*
+          import hudson.security.*
+          import hudson.util.*
+          import jenkins.install.InstallState
+
+          def instance = Jenkins.getInstance()
+
+          // Skip setup wizard if not configured
+          if (instance.getInstallState() == InstallState.UNKNOWN) {
+            instance.setInstallState(InstallState.INITIAL_SETUP_COMPLETED)
+          }
+
+          // Create the user with password if security is not configured
+          if (!instance.isUseSecurity()) {
+            def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+            hudsonRealm.createAccount("admin", "{{ jenkins_admin_password }}")
+            instance.setSecurityRealm(hudsonRealm)
+
+            def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+            instance.setAuthorizationStrategy(strategy)
+            instance.save()
+          }
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+      notify: Reiniciar Jenkins
+
+    - name: Garantir que Jenkins escute apenas em localhost
+      ansible.builtin.lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JENKINS_LISTEN_ADDRESS='
+        line: 'JENKINS_LISTEN_ADDRESS=127.0.0.1'
+        state: present
+      notify: Reiniciar Jenkins
+
+    - name: Ajustar limites de sistema para Jenkins
+      ansible.builtin.blockinfile:
+        path: "/etc/security/limits.conf"
+        block: |
+          jenkins    -    nofile    8192
+          jenkins    -    nproc     4096
+        marker: "# {mark} ANSIBLE MANAGED BLOCK FOR JENKINS LIMITS"
+
+    - name: Aguardar Jenkins inicializar completamente
+      ansible.builtin.wait_for:
+        port: "{{ jenkins_internal_port }}"
+        host: 127.0.0.1
+        state: started
+        timeout: 120
+        delay: 10
+
+    - name: Verificar status do serviço Jenkins
+      ansible.builtin.systemd:
+        name: jenkins
+        state: started
+      register: jenkins_service_status
+
+    - name: Verificar processo Jenkins
+      ansible.builtin.shell:
+        cmd: ps aux | grep jenkins | grep -v grep
+      register: jenkins_process
+      changed_when: false
+
+    - name: Verificar porta Jenkins
+      ansible.builtin.wait_for:
+        port: "{{ jenkins_internal_port }}"
+        host: 127.0.0.1
+        state: started
+        timeout: 30
+
+    - name: Testar acesso local ao Jenkins
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ jenkins_internal_port }}/jenkins"
+        method: GET
+        status_code: 200, 403, 503
+        timeout: 30
+      register: jenkins_local_test
+      ignore_errors: yes
+
+    - name: Obter initial admin password (se aplicável)
+      ansible.builtin.shell:
+        cmd: cat /var/lib/jenkins/secrets/initialAdminPassword
+      register: jenkins_initial_password
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Mostrar resultado da instalação
+      ansible.builtin.debug:
+        msg: |
+          🎉 JENKINS INSTALADO COM SUCESSO!
+          =================================
+          URL Local: http://127.0.0.1:{{ jenkins_internal_port }}/jenkins
+          URL Externa: https://jenkins.wd.local/jenkins
+          Status Serviço: {{ jenkins_service_status.state }}
+          Teste Local: {{ jenkins_local_test.status | default('N/A') }}
+          Initial Password: {{ jenkins_initial_password.stdout | default('Configurado via Groovy') }}
+          =================================
+          📝 PRÓXIMOS PASSOS:
+          1. Acesse https://jenkins.wd.local/jenkins
+          2. Use usuário: admin
+          3. Use a senha definida no secrets.yml
+
+    - name: Coletar logs em caso de problemas
+      ansible.builtin.shell:
+        cmd: |
+          echo "=== Jenkins Service Status ==="
+          systemctl status jenkins -l
+          echo "=== Jenkins Logs (últimas 50 linhas) ==="
+          journalctl -u jenkins -n 50 --no-pager
+          echo "=== Jenkins Process ==="
+          ps aux | grep jenkins | grep -v grep
+          echo "=== Port Check ==="
+          netstat -tlnp | grep {{ jenkins_internal_port }} || ss -tlnp | grep {{ jenkins_internal_port }}
+        executable: /bin/bash
+      register: jenkins_debug_info
+      when: jenkins_local_test is failed or jenkins_local_test.status != 200
+
+    - name: Mostrar informações de debug em caso de erro
+      ansible.builtin.debug:
+        msg: "INFORMAÇÕES DE DEBUG JENKINS:\n{{ jenkins_debug_info.stdout }}"
+      when: jenkins_local_test is failed or jenkins_local_test.status != 200
+
+  handlers:
+    - name: Reiniciar Jenkins
+      ansible.builtin.systemd:
+        name: jenkins
+        state: restarted
+        daemon_reload: yes
+      listen: "Reiniciar Jenkins"

@@ -1,0 +1,375 @@
+# ~/ansible_devops_project/playbooks/09_sonarqube_setup.yml
+---
+- name: Instalar e Configurar SonarQube - LIMPEZA COMPLETA E INSTALAÇÃO
+  hosts: sonarqube_server
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:
+    - name: Parar todos os serviços relacionados ao SonarQube
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop:
+        - sonar
+        - sonarqube
+      ignore_errors: yes
+
+    - name: Remover serviço systemd do SonarQube
+      ansible.builtin.file:
+        path: /etc/systemd/system/sonar.service
+        state: absent
+      ignore_errors: yes
+
+    - name: Remover diretório de instalação do SonarQube
+      ansible.builtin.file:
+        path: /opt/sonarqube
+        state: absent
+
+    - name: Remover usuário e grupo sonarqube
+      ansible.builtin.user:
+        name: sonarqube
+        state: absent
+        remove: yes
+      ignore_errors: yes
+
+    - name: Remover grupo sonarqube
+      ansible.builtin.group:
+        name: sonarqube
+        state: absent
+      ignore_errors: yes
+
+    - name: Remover arquivos temporários de download
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        - "/tmp/sonarqube-*.zip"
+
+    - name: Limpar banco de dados PostgreSQL
+      ansible.builtin.shell: |
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS sonarqube;"
+        sudo -u postgres psql -c "DROP USER IF EXISTS sonar;"
+      ignore_errors: yes
+
+    - name: Recarregar systemd após limpeza
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Atualizar cache de pacotes
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Instalar Java 17
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jdk
+        state: present
+
+    - name: Verificar instalação do Java
+      ansible.builtin.command:
+        cmd: java -version
+      register: java_check
+      changed_when: false
+
+    - name: Instalar PostgreSQL
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+
+    - name: Instalar dependências do sistema
+      ansible.builtin.apt:
+        name:
+          - unzip
+          - wget
+          - curl
+        state: present
+
+    - name: Iniciar e habilitar serviço PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Criar usuário de banco de dados
+      ansible.builtin.shell:
+        cmd: |
+          sudo -u postgres psql -c "CREATE USER sonar WITH PASSWORD '{{ sonarqube_db_password }}';"
+        executable: /bin/bash
+      register: create_user
+      changed_when: create_user.rc == 0
+      failed_when: create_user.rc != 0
+
+    - name: Criar banco de dados
+      ansible.builtin.shell:
+        cmd: |
+          sudo -u postgres psql -c "CREATE DATABASE sonarqube OWNER sonar;"
+        executable: /bin/bash
+      register: create_db
+      changed_when: create_db.rc == 0
+      failed_when: create_db.rc != 0
+
+    - name: Conceder permissões no banco de dados
+      ansible.builtin.shell:
+        cmd: |
+          sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonar;"
+          sudo -u postgres psql -d sonarqube -c "GRANT CREATE ON SCHEMA public TO sonar;"
+          sudo -u postgres psql -d sonarqube -c "GRANT USAGE ON SCHEMA public TO sonar;"
+        executable: /bin/bash
+      register: grant_perms
+      changed_when: grant_perms.rc == 0
+
+    - name: Criar grupo 'sonarqube'
+      ansible.builtin.group:
+        name: sonarqube
+        state: present
+
+    - name: Criar usuário 'sonarqube'
+      ansible.builtin.user:
+        name: sonarqube
+        group: sonarqube
+        shell: /bin/bash
+        system: yes
+        state: present
+
+    - name: Criar estrutura de diretórios do SonarQube
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: sonarqube
+        group: sonarqube
+        mode: '0755'
+      loop:
+        - /opt/sonarqube
+        - /opt/sonarqube/conf
+        - /opt/sonarqube/data
+        - /opt/sonarqube/temp
+        - /opt/sonarqube/logs
+        - /opt/sonarqube/extensions
+
+    - name: Baixar SonarQube
+      ansible.builtin.command: >
+        wget --no-verbose --show-progress
+        -O "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonarqube_version }}.zip"
+      args:
+        creates: "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+      register: download_result
+      until: download_result is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Verificar arquivo baixado
+      ansible.builtin.stat:
+        path: "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+      register: downloaded_file
+
+    - name: Descompactar SonarQube para diretório temporário
+      ansible.builtin.unarchive:
+        src: "/tmp/sonarqube-{{ sonarqube_version }}.zip"
+        dest: "/tmp/"
+        remote_src: true
+        owner: sonarqube
+        group: sonarqube
+        mode: '0755'
+      when: downloaded_file.stat.exists
+
+    - name: Verificar conteúdo descompactado
+      ansible.builtin.shell:
+        cmd: ls -la /tmp/sonarqube-{{ sonarqube_version }}/
+      register: temp_ls_output
+      changed_when: false
+
+    - name: Debug - Conteúdo do diretório temporário
+      ansible.builtin.debug:
+        var: temp_ls_output.stdout
+
+    - name: Mover conteúdo para diretório final (método manual)
+      ansible.builtin.shell:
+        cmd: |
+          # Mover todos os arquivos e subdiretórios para /opt/sonarqube
+          cp -r /tmp/sonarqube-{{ sonarqube_version }}/* /opt/sonarqube/
+          # Ajustar propriedade de todos os arquivos
+          chown -R sonarqube:sonarqube /opt/sonarqube/
+          chmod -R 755 /opt/sonarqube/
+        executable: /bin/bash
+      register: move_content
+      changed_when: move_content.rc == 0
+
+    - name: Limpar diretório temporário
+      ansible.builtin.file:
+        path: "/tmp/sonarqube-{{ sonarqube_version }}"
+        state: absent
+
+    - name: Verificar conteúdo final
+      ansible.builtin.shell:
+        cmd: ls -la /opt/sonarqube/
+      register: final_ls_output
+      changed_when: false
+
+    - name: Debug - Conteúdo final do diretório
+      ansible.builtin.debug:
+        var: final_ls_output.stdout
+
+    - name: Configurar arquivo de propriedades
+      ansible.builtin.template:
+        src: "../templates/sonar.properties.j2"
+        dest: /opt/sonarqube/conf/sonar.properties
+        owner: sonarqube
+        group: sonarqube
+        mode: '0644'
+      notify: Reiniciar SonarQube
+
+    - name: Verificar e configurar wrapper.conf
+      ansible.builtin.stat:
+        path: /opt/sonarqube/conf/wrapper.conf
+      register: wrapper_conf
+
+    - name: Configurar caminho do Java no wrapper
+      ansible.builtin.lineinfile:
+        path: /opt/sonarqube/conf/wrapper.conf
+        regexp: '^#?wrapper.java.command='
+        line: 'wrapper.java.command=/usr/bin/java'
+        state: present
+        owner: sonarqube
+        group: sonarqube
+        mode: '0644'
+      when: wrapper_conf.stat.exists
+
+    - name: Tornar todos os scripts executáveis
+      ansible.builtin.shell:
+        cmd: find /opt/sonarqube -name "*.sh" -type f -exec chmod +x {} \;
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Ajustar limites do sistema
+      ansible.builtin.blockinfile:
+        path: "/etc/security/limits.conf"
+        block: |
+          sonarqube   -   nofile   65536
+          sonarqube   -   nproc    4096
+        marker: "# {mark} ANSIBLE MANAGED BLOCK FOR SONARQUBE LIMITS"
+
+    - name: Configurar limites systemd
+      ansible.builtin.blockinfile:
+        path: "{{ item }}"
+        block: |
+          DefaultLimitNOFILE=65536
+          DefaultLimitNPROC=4096
+        marker: "# {mark} ANSIBLE MANAGED BLOCK FOR SYSTEMD LIMITS"
+      loop:
+        - "/etc/systemd/system.conf"
+        - "/etc/systemd/user.conf"
+      notify: Recarregar systemd daemon
+
+    - name: Configurar vm.max_map_count
+      ansible.builtin.sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        state: present
+        reload: true
+
+    - name: Verificar caminho do script sonar.sh
+      ansible.builtin.find:
+        paths: /opt/sonarqube
+        patterns: "sonar.sh"
+        file_type: file
+      register: sonar_script
+
+    - name: Debug - Caminho do sonar.sh
+      ansible.builtin.debug:
+        var: sonar_script.files
+
+    - name: Criar serviço systemd
+      ansible.builtin.template:
+        src: "../templates/sonar.service.j2"
+        dest: /etc/systemd/system/sonar.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Recarregar systemd daemon
+        - Iniciar SonarQube
+
+    - name: Recarregar systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Iniciar SonarQube
+      ansible.builtin.systemd:
+        name: sonar
+        state: started
+        enabled: yes
+
+    - name: Aguardar inicialização do SonarQube
+      ansible.builtin.wait_for:
+        port: 9000
+        host: "127.0.0.1"
+        state: started
+        timeout: 180
+        delay: 10
+      register: sonar_port
+
+    - name: Verificar status do serviço
+      ansible.builtin.systemd:
+        name: sonar
+        state: started
+      register: service_status
+
+    - name: Testar acesso ao SonarQube
+      ansible.builtin.uri:
+        url: "http://localhost:9000"
+        method: GET
+        status_code: 200, 302
+        timeout: 30
+      register: sonar_test
+      when: sonar_port is succeeded
+
+    - name: Mostrar resultado final
+      ansible.builtin.debug:
+        msg: |
+          🎉 SONARQUBE INSTALADO COM SUCESSO!
+          ===================================
+          URL: http://{{ ansible_host }}:9000
+          Status: {{ service_status.state }}
+          Teste HTTP: {{ sonar_test.status }}
+          ===================================
+      when: sonar_port is succeeded
+
+    - name: Coletar logs em caso de falha
+      ansible.builtin.shell:
+        cmd: journalctl -u sonar -n 30 --no-pager
+      register: sonar_logs
+      when: sonar_port is failed
+
+    - name: Mostrar logs de erro
+      ansible.builtin.debug:
+        msg: "LOGS DO SONARQUBE (últimas 30 linhas):\n{{ sonar_logs.stdout }}"
+      when: sonar_port is failed
+
+  handlers:
+    - name: Recarregar systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Iniciar SonarQube
+      ansible.builtin.systemd:
+        name: sonar
+        state: started
+        enabled: true
+        daemon_reload: yes
+
+    - name: Reiniciar SonarQube
+      ansible.builtin.systemd:
+        name: sonar
+        state: restarted
+        daemon_reload: yes

@@ -1,0 +1,38 @@
+<!-- Exemplo de jenkins_config.xml.j2 - Conteúdo real dependeria da sua configuração específica do Jenkins -->
+<!-- Este arquivo é apenas um placeholder para ilustrar o uso de templates para Jenkins -->
+<hudson>
+  <numExecutors>2</numExecutors>
+  <mode>NORMAL</mode>
+  <nodeDescription>Master Jenkins node</nodeDescription>
+  <label></label>
+  <assignedLabels>
+    <hudson.model.Label>
+      <name>master</name>
+    </hudson.model.Label>
+  </assignedLabels>
+  <scm class="hudson.scm.NullSCM"/>
+  <workspaceDir>${JENKINS_HOME}/workspace/${ITEM_FULL_NAME}</workspaceDir>
+  <buildsDir>${JENKINS_HOME}/jobs/${ITEM_FULL_NAME}/builds</buildsDir>
+  <jdks/>
+  <viewsTabBar class="hudson.views.DefaultViewsTabBar"/>
+  <myViewsTabBar class="hudson.views.DefaultMyViewsTabBar"/>
+  <clouds/>
+  <quietPeriod>5</quietPeriod>
+  <scmCheckoutRetryCount>0</scmCheckoutRetryCount>
+  <views>
+    <hudson.model.AllView>
+      <owner class="hudson.model.AllView" reference="../../.."/>
+      <name>all</name>
+      <filterExecutors>false</filterExecutors>
+      <filterQueue>false</filterQueue>
+      <properties class="hudson.model.View$PropertyList"/>
+    </hudson.model.AllView>
+  </views>
+  <primaryView>all</primaryView>
+  <slaveAgentPort>0</slaveAgentPort>
+  <disabledAdministrativeMonitors/>
+  <markupFormatter class="hudson.markup.EscapedMarkupFormatter"/>
+  <nodeProperties/>
+  <globalNodeProperties/>
+  <no usage statistics>false</no usage statistics>
+</hudson>

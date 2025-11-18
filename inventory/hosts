@@ -1,0 +1,38 @@
+# ~/ansible_devops_project/inventory/hosts
+[control_node]
+ansible.wd.local ansible_host=192.168.204.153
+
+[nginx_proxy]
+nginx.wd.local ansible_host=192.168.204.146
+
+[gitlab_server]
+gitlab.wd.local ansible_host=192.168.204.149
+
+[rancher_standalone_server]
+rancher.wd.local ansible_host=192.168.204.130
+
+[jenkins_server]
+jenkins.wd.local ansible_host=192.168.204.147
+
+[sonarqube_server]
+sonarqube.wd.local ansible_host=192.168.204.154
+
+[k3s_master]
+k3s-master.wd.local ansible_host=192.168.204.150
+
+[k3s_workers]
+k3s-worker-01.wd.local ansible_host=192.168.204.148
+k3s-worker-02.wd.local ansible_host=192.168.204.151
+
+[k3s_cluster:children]
+k3s_master
+k3s_workers
+
+[all_vms:children]
+control_node
+nginx_proxy
+gitlab_server
+rancher_standalone_server
+jenkins_server
+sonarqube_server
+k3s_cluster

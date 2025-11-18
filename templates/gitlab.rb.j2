@@ -1,0 +1,56 @@
+# gitlab.rb template for NGINX Reverse Proxy integration and Container Registry
+# Configuracoes para o GitLab, otimizadas para uso com Nginx externo e Container Registry.
+
+external_url 'https://gitlab.{{ internal_domain }}'
+
+# Desabilitar NGINX interno do GitLab, pois usaremos o NGINX externo (nginx-proxy)
+nginx['enable'] = false
+web_server['external_users'] = ['www-data'] # Permite que o NGINX externo acesse os arquivos do GitLab
+
+# Desabilitar Let's Encrypt, pois estamos usando nossa propria PKI interna
+letsencrypt['enable'] = false
+
+# Configurar o GitLab para confiar no proxy reverso (nginx-proxy)
+gitlab_rails['trusted_proxies'] = ['{{ nginx_proxy_ip }}'] # IP da sua VM Nginx
+gitlab_rails['gitlab_https'] = true
+gitlab_rails['gitlab_port'] = 443
+gitlab_rails['gitlab_relative_url_root'] = "" # Se nao estiver usando um subdiretorio (ex: /gitlab)
+
+# Configuracoes de porta para o Workhorse (componente do GitLab)
+gitlab_workhorse['listen_network'] = 'tcp'
+gitlab_workhorse['listen_addr'] = '0.0.0.0:{{ gitlab_workhorse_port }}' # Ouve em todas as interfaces
+
+# Configuracoes para o Container Registry
+registry_external_url 'https://gitlab.{{ internal_domain }}:443' # URL externa do Registry via NGINX
+gitlab_rails['registry_enabled'] = true
+gitlab_rails['registry_host'] = 'gitlab.{{ internal_domain }}'
+gitlab_rails['registry_port'] = 443 # A porta que o NGINX esta expondo para o registry
+gitlab_rails['registry_path'] = "/var/opt/gitlab/gitlab-rails/shared/registry" # Path de armazenamento do registry
+
+# Configuracoes de e-mail (exemplo, ajuste conforme necessario para notificacoes)
+# gitlab_rails['smtp_enable'] = true
+# gitlab_rails['smtp_address'] = "smtp.example.com"
+# gitlab_rails['smtp_port'] = 587
+# gitlab_rails['smtp_user_name'] = "gitlab@example.com"
+# gitlab_rails['smtp_password'] = "password"
+# gitlab_rails['smtp_domain'] = "example.com"
+# gitlab_rails['smtp_authentication'] = "login"
+# gitlab_rails['smtp_enable_starttls_auto'] = true
+# gitlab_rails['smtp_tls'] = false
+# gitlab_rails['gitlab_email_from'] = 'gitlab@{{ internal_domain }}'
+# gitlab_rails['gitlab_email_display_name'] = 'GitLab'
+
+# Configuracoes de backup (exemplo - ajuste os paths)
+# gitlab_rails['manage_backup_path'] = true
+# gitlab_rails['backup_path'] = "/var/opt/gitlab/backups"
+# gitlab_rails['backup_keep_time'] = 604800 # 7 days in seconds
+
+# Outras configuracoes
+# user['git_user_email'] = "git@{{ internal_domain }}"
+
+# Otimizacoes de desempenho para sistemas com menos RAM (ajuste conforme a RAM alocada)
+# Sidekiq: processa jobs em segundo plano. Reduza o numero de threads se a RAM for limitada.
+# sidekiq['concurrency'] = 10 # Padrao  50, reduza para 10-25 se tiver 4-8GB de RAM.
+# Postgres: se estiver usando o banco de dados interno do GitLab
+# postgresql['shared_buffers'] = "256MB" # Ajuste para 25% da RAM disponvel
+# postgresql['effective_cache_size'] = "768MB" # Ajuste para 75% da RAM disponvel

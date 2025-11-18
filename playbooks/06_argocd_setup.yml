@@ -1,0 +1,115 @@
+# ~/ansible_devops_project/playbooks/06_argocd_setup.yml
+---
+- name: Instalar e Configurar ArgoCD
+  hosts: k3s_master
+  become: true
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:
+    - name: Instalar coleo community.kubernetes (se ainda no instalada)
+      ansible.builtin.command: ansible-galaxy collection install community.kubernetes
+      ignore_errors: true
+
+    - name: Criar namespace para ArgoCD (se no existir)
+      community.kubernetes.k8s:
+        name: argocd
+        api_version: v1
+        kind: Namespace
+        state: present
+      register: argocd_namespace_result
+      changed_when: argocd_namespace_result.stdout is search("created")
+
+    - name: Instalar ArgoCD com manifests oficiais (aplicar apenas se ainda no estiver instalado)
+      ansible.builtin.uri:
+        url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+        return_content: true
+      register: argocd_install_manifest
+
+    - name: Aplicar manifests do ArgoCD
+      community.kubernetes.k8s:
+        state: present
+        definition: "{{ argocd_install_manifest.content }}"
+        namespace: argocd
+      register: argocd_apply_result
+      changed_when: argocd_apply_result.changed
+
+    - name: Aguardar pods do ArgoCD estarem prontos
+      community.kubernetes.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: argocd
+        label_selector: "app.kubernetes.io/name=argocd-server"
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300 
+      register: argocd_pods_ready_check
+      until: argocd_pods_ready_check.resources | length > 0 and argocd_pods_ready_check.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first == 'True'
+      retries: 6
+      delay: 5
+
+    - name: Obter senha inicial do admin do ArgoCD
+      ansible.builtin.shell: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+      register: argocd_initial_password
+      changed_when: false
+      no_log: true 
+
+    - name: Exibir senha inicial do ArgoCD
+      ansible.builtin.debug:
+        msg: "✅ Senha inicial do ArgoCD para o usurio 'admin' (para login via CLI/UI) : {{ argocd_initial_password.stdout }}"
+      when: argocd_initial_password.stdout is defined and argocd_initial_password.stdout != ''
+
+    - name: Mudar tipo de servio argocd-server para NodePort (para acesso externo via Nginx)
+      community.kubernetes.k8s:
+        api_version: v1
+        kind: Service
+        name: argocd-server
+        namespace: argocd
+        state: present
+        definition:
+          spec:
+            type: NodePort
+            ports:
+              - port: 443
+                targetPort: 8080
+                nodePort: 30080 
+      register: argocd_svc_patch_result
+      changed_when: argocd_svc_patch_result.changed
+
+    - name: Obter porta NodePort do ArgoCD
+      ansible.builtin.shell: kubectl get svc argocd-server -n argocd -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}'
+      register: argocd_nodeport_dynamic
+      changed_when: false
+
+    - name: Exibir porta NodePort do ArgoCD (para verificacao)
+      ansible.builtin.debug:
+        msg: "ArgoCD NodePort: {{ argocd_nodeport_dynamic.stdout }}"
+
+    - name: Adicionar credenciais do repositrio GitLab ao ArgoCD (via CLI interna no Master)
+      ansible.builtin.shell: |
+        argocd repo add https://gitlab.{{ internal_domain }}/{{ gitlab_pat_username }}/gitops-repo.git \
+          --username {{ gitlab_pat_username }} \
+          --password {{ gitlab_pat_token }} \
+          --insecure-skip-tls-verify \
+          --name gitlab-gitops-repo \
+          --grpc-web # Usar grpc-web para compatibilidade com Nginx
+      environment:
+        ARGOCD_SERVER: "localhost:8080" 
+        ARGOCD_AUTH_TOKEN: "{{ argocd_initial_password.stdout }}" 
+      args:
+        chdir: "/usr/local/bin" 
+      changed_when: true 
+      no_log: true
+      ignore_errors: yes 
+
+    - name: Instalar argocd CLI no Master (se ainda no instalado)
+      ansible.builtin.shell: |
+        curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+        sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+        rm argocd-linux-amd64
+      args:
+        creates: /usr/local/bin/argocd

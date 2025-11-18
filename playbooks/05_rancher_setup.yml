@@ -1,0 +1,99 @@
+# ~/ansible_devops_project/playbooks/05_rancher_setup.yml
+---
+- name: Instalar e Configurar Rancher Standalone via Docker
+  hosts: rancher_standalone_server
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:    
+    - name: Instalar Docker e dependências
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose
+          - python3-pip
+          - python3-venv
+        update_cache: yes
+        state: present
+
+    - name: Instalar Docker SDK para Python
+      ansible.builtin.pip:
+        name: docker
+        state: present
+        virtualenv: /opt/ansible_venv/docker_sdk
+        virtualenv_command: python3 -m venv
+
+    - name: Iniciar e habilitar Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Adicionar usuário ao grupo docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      changed_when: false
+    
+    - name: Criar diretório para armazenar a CA usada pelo Rancher
+      ansible.builtin.file:
+        path: /opt/rancher/certs
+        state: directory
+        mode: '0755'
+
+    - name: Copiar CA interna para o host (para ser montada no container)
+      ansible.builtin.copy:
+        src: ../files/wd-root-ca.crt
+        dest: /opt/rancher/certs/cacerts.pem
+        mode: '0644'
+    
+    - name: Remover flag de reset (se existir)
+      ansible.builtin.file:
+        path: /opt/rancher/server/db/reset-flag
+        state: absent
+      changed_when: false
+
+    - name: Remover container antigo do Rancher
+      community.docker.docker_container:
+        name: rancher
+        state: absent
+    
+    - name: Subir Rancher usando a CA fornecida
+      community.docker.docker_container:
+        name: rancher
+        image: rancher/rancher:stable
+        state: started
+        privileged: true
+        restart_policy: unless-stopped
+        ports:
+          - "80:80"
+        volumes:
+          - /opt/rancher:/var/lib/rancher
+          - /opt/rancher/certs/cacerts.pem:/etc/rancher/ssl/cacerts.pem:ro
+        env:
+          CATTLE_SERVER_URL: "https://rancher.{{ internal_domain }}"
+          CATTLE_BOOTSTRAP_PASSWORD: "{{ rancher_admin_password }}"
+      register: rancher_start_status
+
+    - name: Exibir status da criação do container Rancher
+      ansible.builtin.debug:
+        var: rancher_start_status
+    
+    - name: Aguardar Rancher responder
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 80
+        timeout: 600
+        delay: 10
+        state: started
+    
+    - name: Exibir URL final do Rancher
+      ansible.builtin.debug:
+        msg: >
+          Rancher instalado e acessível em https://rancher.{{ internal_domain }}
+          Senha inicial: {{ rancher_admin_password }}

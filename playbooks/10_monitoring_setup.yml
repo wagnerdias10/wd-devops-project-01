@@ -1,0 +1,314 @@
+---
+- name: Deploy Prometheus e Grafana com Verificações Robustas
+  hosts: k3s_master
+  become: yes
+
+  tasks:
+    - name: Carregar variáveis de secrets.yml (se existir)
+      ansible.builtin.include_vars:
+        file: group_vars/secrets.yml
+      failed_when: false
+      ignore_errors: yes
+
+    - name: Definir senha padrão se não foi carregada
+      ansible.builtin.set_fact:
+        grafana_admin_password: "Admin@123456"
+      when: grafana_admin_password is not defined
+
+    - name: Exibir aviso sobre senha
+      ansible.builtin.debug:
+        msg: "⚠️ Usando senha padrão. Para produção, crie group_vars/secrets.yml com senha personalizada."
+      when: grafana_admin_password == "Admin@123456"
+
+    - name: Verificar se k3s está em execução
+      ansible.builtin.systemd:
+        name: k3s
+        state: started
+      check_mode: yes
+      register: k3s_status
+      failed_when: false
+
+    - name: Falhar se k3s não estiver rodando
+      ansible.builtin.fail:
+        msg: "Cluster k3s não está em execução. Inicie o k3s antes de prosseguir."
+      when: k3s_status.status.ActiveState != "active"
+
+    - name: Verificar se Helm está instalado
+      ansible.builtin.command: helm version --short
+      register: helm_check
+      changed_when: false
+      failed_when: false
+
+    - name: Falhar se Helm não estiver instalado
+      ansible.builtin.fail:
+        msg: "Helm não encontrado. Instale o Helm antes de prosseguir."
+      when: helm_check.rc != 0
+
+    - name: Verificar biblioteca kubernetes do Python
+      ansible.builtin.command: python3 -c "import kubernetes"
+      register: python_k8s_check
+      changed_when: false
+      failed_when: false
+
+    - name: Instalar biblioteca kubernetes se ausente
+      ansible.builtin.pip:
+        name: kubernetes
+        executable: pip3
+        state: present
+      when: python_k8s_check.rc != 0
+
+    - name: Verificar se namespace monitoring já existe
+      kubernetes.core.k8s_info:
+        kind: Namespace
+        name: monitoring
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+      register: namespace_check
+      failed_when: false
+
+    - name: Definir namespace_exists como false por padrão
+      ansible.builtin.set_fact:
+        namespace_exists: false
+
+    - name: Atualizar namespace_exists se encontrado
+      ansible.builtin.set_fact:
+        namespace_exists: true
+      when:
+        - namespace_check.resources is defined
+        - namespace_check.resources | length > 0
+
+    - name: Listar releases do Helm no namespace monitoring
+      ansible.builtin.command: helm list -n monitoring -q
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: helm_releases
+      changed_when: false
+      failed_when: false
+
+    - name: Definir prometheus_installed como false por padrão
+      ansible.builtin.set_fact:
+        prometheus_installed: false
+
+    - name: Atualizar se Prometheus encontrado
+      ansible.builtin.set_fact:
+        prometheus_installed: true
+      when:
+        - helm_releases.rc == 0
+        - "'kube-prometheus-stack' in helm_releases.stdout"
+
+    - name: Definir port_conflict como false por padrão
+      ansible.builtin.set_fact:
+        port_conflict: false
+
+    - name: Verificar serviços no namespace monitoring
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: monitoring
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+      register: services_check
+      failed_when: false
+      when: namespace_exists
+
+    - name: Buscar serviços usando NodePort 30000
+      ansible.builtin.set_fact:
+        port_conflict: true
+      loop: "{{ services_check.resources | default([]) }}"
+      when:
+        - namespace_exists
+        - item.spec is defined
+        - item.spec.type is defined
+        - item.spec.type == 'NodePort'
+        - item.spec.ports is defined
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Obter informações dos nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+      register: nodes_info
+
+    - name: Definir cluster_ready como false por padrão
+      ansible.builtin.set_fact:
+        cluster_ready: false
+
+    - name: Atualizar se nodes prontos encontrados
+      ansible.builtin.set_fact:
+        cluster_ready: true
+      when:
+        - nodes_info.resources is defined
+        - nodes_info.resources | length > 0
+
+    - name: Exibir relatório de verificações
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "📋 RELATÓRIO DE PRÉ-INSTALAÇÃO"
+          - "=========================================="
+          - "✅ K3s Status: {{ 'ATIVO' if k3s_status.status.ActiveState == 'active' else 'INATIVO' }}"
+          - "✅ Helm Instalado: {{ 'SIM' if helm_check.rc == 0 else 'NÃO' }}"
+          - "✅ Biblioteca Python K8s: {{ 'INSTALADA' if python_k8s_check.rc == 0 else 'AUSENTE' }}"
+          - "📦 Namespace 'monitoring': {{ 'EXISTE' if namespace_exists else 'NÃO EXISTE' }}"
+          - "🔍 Prometheus Stack: {{ 'INSTALADO' if prometheus_installed else 'NÃO INSTALADO' }}"
+          - "🚪 Conflito NodePort 30000: {{ 'SIM ⚠️' if port_conflict else 'NÃO' }}"
+          - "🌐 Cluster Pronto: {{ 'SIM' if cluster_ready else 'NÃO' }}"
+          - "=========================================="
+
+    - name: Aviso se stack já estiver instalado
+      ansible.builtin.pause:
+        prompt: |
+
+          ⚠️  ATENÇÃO: kube-prometheus-stack JÁ ESTÁ INSTALADO!
+
+          A operação irá ATUALIZAR a instalação existente.
+
+          Deseja continuar?
+          - Pressione ENTER para continuar
+          - Pressione Ctrl+C + A para cancelar
+
+        seconds: 5
+      when: prometheus_installed
+
+    - name: Falhar se houver conflito de porta crítico
+      ansible.builtin.fail:
+        msg: |
+          ❌ ERRO: NodePort 30000 já está em uso!
+
+          Ações:
+          1. Remova o serviço conflitante
+          2. Altere a porta no Helm values
+      when:
+        - port_conflict
+        - not prometheus_installed
+
+    - name: Adicionar repositório Helm do Prometheus
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+        state: present
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Atualizar cache do Helm
+      ansible.builtin.command: helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: true
+
+    - name: Criar namespace monitoring (se não existir)
+      kubernetes.core.k8s:
+        name: monitoring
+        api_version: v1
+        kind: Namespace
+        state: present
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+    - name: Deploy/Upgrade kube-prometheus-stack via Helm
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: monitoring
+        create_namespace: no
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        update_repo_cache: yes
+        wait: yes
+        wait_timeout: 15m
+        values:
+          grafana:
+            enabled: true
+            service:
+              type: NodePort
+              nodePort: 30000
+            adminPassword: "{{ grafana_admin_password }}"
+            persistence:
+              enabled: false
+            ingress:
+              enabled: false
+
+          prometheus:
+            enabled: true
+            prometheusSpec:
+              retention: 15d
+              storageSpec: {}
+              resources:
+                requests:
+                  memory: "1Gi"
+                  cpu: "500m"
+                limits:
+                  memory: "2Gi"
+                  cpu: "1000m"
+
+          alertmanager:
+            enabled: true
+            alertmanagerSpec:
+              storage: {}
+
+          kubeStateMetrics:
+            enabled: true
+
+          nodeExporter:
+            enabled: true
+
+          prometheusOperator:
+            enabled: true
+      register: helm_deploy
+
+    - name: Exibir status da instalação
+      ansible.builtin.debug:
+        msg: "{{ '✅ Instalação concluída com sucesso!' if not helm_deploy.failed else '❌ Falha na instalação' }}"
+
+    - name: Aguardar 30 segundos para pods iniciarem
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Listar todos os pods no namespace monitoring
+      ansible.builtin.command: kubectl get pods -n monitoring --kubeconfig=/etc/rancher/k3s/k3s.yaml
+      register: all_pods
+      changed_when: false
+
+    - name: Exibir pods criados
+      ansible.builtin.debug:
+        msg: "{{ all_pods.stdout_lines }}"
+
+    - name: Obter NodePort do Grafana via kubectl
+      ansible.builtin.shell: |
+        kubectl get svc -n monitoring kube-prometheus-stack-grafana \
+          -o jsonpath='{.spec.ports[0].nodePort}' \
+          --kubeconfig=/etc/rancher/k3s/k3s.yaml
+      register: grafana_port_output
+      changed_when: false
+
+    - name: Definir NodePort do Grafana
+      ansible.builtin.set_fact:
+        grafana_nodeport: "{{ grafana_port_output.stdout }}"
+
+    - name: Obter IP do node
+      ansible.builtin.set_fact:
+        node_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Exibir informações de acesso
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "✅ INSTALAÇÃO CONCLUÍDA COM SUCESSO!"
+          - "=========================================="
+          - ""
+          - "📊 GRAFANA:"
+          - "  URL: http://{{ node_ip }}:{{ grafana_nodeport }}"
+          - "  Usuário: admin"
+          - "  Senha: {{ grafana_admin_password }}"
+          - ""
+          - "🔍 PROMETHEUS:"
+          - "  Para acessar, use port-forward:"
+          - "  kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+          - "  URL: http://localhost:9090"
+          - ""
+          - "🔔 ALERTMANAGER:"
+          - "  Para acessar, use port-forward:"
+          - "  kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093"
+          - "  URL: http://localhost:9093"
+          - ""
+          - "=========================================="
+          - "📋 COMANDOS ÚTEIS:"
+          - "  Ver pods: kubectl get pods -n monitoring"
+          - "  Ver services: kubectl get svc -n monitoring"
+          - "  Logs Grafana: kubectl logs -n monitoring -l app.kubernetes.io/name=grafana"

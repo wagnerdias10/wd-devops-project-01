@@ -1,0 +1,370 @@
+# 02_nginx_pki_setup.yml - Versão corrigida e revisada
+# Objetivo: PKI interna, NGINX reverse proxy, distribuição da Root CA, ConfigMap no K8s.
+- name: "Configurar NGINX Reverse Proxy e PKI Interna (Host: nginx)"
+  hosts: nginx_proxy
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+  tasks:
+    - name: Instalar NGINX
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+    - name: Parar NGINX temporariamente para configuração
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+        enabled: false
+    - name: Criar estrutura de diretórios para PKI e NGINX
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode | default('0755') }}"
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+      loop:
+        - { path: "/etc/ssl/private/ca", mode: '0700' }
+        - { path: "/etc/ssl/private/ca/newcerts" }
+        - { path: "/etc/ssl/private/ca/certs" }
+        - { path: "/etc/ssl/private/ca/crl" }
+        - { path: "/etc/nginx/ssl", mode: '0700' }
+        - { path: "/etc/nginx/sites-available" }
+        - { path: "/etc/nginx/sites-enabled" }
+        - { path: "/etc/nginx/conf.d" }
+        - { path: "/var/log/nginx/sites" }
+        - { path: "/opt/ssl-management/scripts" }
+        - { path: "/opt/ssl-management/backups" }
+        - { path: "/opt/ssl-management/templates" }
+        - { path: "/var/cache/nginx/proxy", owner: 'www-data', group: 'www-data' }
+    - name: Inicializar banco de dados da CA (index.txt e serial)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: touch
+        mode: '0600'
+      loop:
+        - "/etc/ssl/private/ca/index.txt"
+        - "/etc/ssl/private/ca/serial"
+        - "/etc/ssl/private/ca/crlnumber"
+    - name: Verificar estado do arquivo serial
+      ansible.builtin.stat:
+        path: "/etc/ssl/private/ca/serial"
+      register: serial_file
+    - name: Definir serial inicial para 1000 (se o arquivo não existir ou estiver vazio)
+      ansible.builtin.copy:
+        content: "1000"
+        dest: "/etc/ssl/private/ca/serial"
+        mode: '0644'
+      when: not (serial_file.stat.exists and serial_file.stat.size > 0)
+    - name: Verificar estado do arquivo crlnumber
+      ansible.builtin.stat:
+        path: "/etc/ssl/private/ca/crlnumber"
+      register: crlnumber_file
+    - name: Definir crlnumber inicial para 1000 (se o arquivo não existir ou estiver vazio)
+      ansible.builtin.copy:
+        content: "1000"
+        dest: "/etc/ssl/private/ca/crlnumber"
+        mode: '0644'
+      when: not (crlnumber_file.stat.exists and crlnumber_file.stat.size > 0)
+    - name: Criar arquivo de configuração da CA Raiz (openssl_root.cnf)
+      ansible.builtin.template:
+        src: ../templates/openssl_root.cnf.j2
+        dest: /etc/ssl/private/ca/openssl_root.cnf
+        mode: '0644'
+    - name: Gerar chave privada e certificado da CA Raiz
+      ansible.builtin.shell: |
+        openssl req -x509 -new -nodes -newkey rsa:4096 -sha256 -days {{ pki_root_validity_days }} \
+            -keyout /etc/ssl/private/ca/rootCA.key \
+            -out /etc/ssl/private/ca/rootCA.crt \
+            -config /etc/ssl/private/ca/openssl_root.cnf \
+            -extensions v3_ca \
+            -subj "/C={{ pki_country }}/ST={{ pki_state }}/L={{ pki_locality }}/O={{ pki_organization }}/OU={{ pki_organizational_unit }}/CN={{ pki_root_cn }}"
+      args:
+        creates: /etc/ssl/private/ca/rootCA.key
+      changed_when: false
+    - name: Definir permissões corretas para chave e certificado da CA Raiz
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/etc/ssl/private/ca/rootCA.key", mode: '0600' }
+        - { path: "/etc/ssl/private/ca/rootCA.crt", mode: '0644' }
+    - name: Criar arquivo de configuração da CA Intermediária (openssl_intermediate.cnf)
+      ansible.builtin.template:
+        src: ../templates/openssl_intermediate.cnf.j2
+        dest: /etc/ssl/private/ca/openssl_intermediate.cnf
+        mode: '0644'
+    - name: Gerar chave privada e CSR da CA Intermediária
+      ansible.builtin.shell: |
+        openssl req -new -nodes -newkey rsa:4096 -sha256 \
+            -keyout /etc/ssl/private/ca/intermediateCA.key \
+            -out /etc/ssl/private/ca/intermediateCA.csr \
+            -config /etc/ssl/private/ca/openssl_intermediate.cnf \
+            -subj "/C={{ pki_country }}/ST={{ pki_state }}/L={{ pki_locality }}/O={{ pki_organization }}/OU={{ pki_organizational_unit }}/CN={{ pki_intermediate_cn }}"
+      args:
+        creates: /etc/ssl/private/ca/intermediateCA.key
+      changed_when: false
+    - name: Assinar o CSR da CA Intermediária com a CA Raiz
+      ansible.builtin.shell: |
+        openssl ca -batch \
+            -in /etc/ssl/private/ca/intermediateCA.csr \
+            -out /etc/ssl/private/ca/intermediateCA.crt \
+            -days {{ pki_intermediate_validity_days }} \
+            -config /etc/ssl/private/ca/openssl_root.cnf \
+            -extensions v3_intermediate_ca \
+            -rand_serial
+      args:
+        creates: /etc/ssl/private/ca/intermediateCA.crt
+      changed_when: false
+    - name: Definir permissões corretas para chave e certificado da CA Intermediária
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/etc/ssl/private/ca/intermediateCA.key", mode: '0600' }
+        - { path: "/etc/ssl/private/ca/intermediateCA.crt", mode: '0644' }
+    - name: Criar arquivo de configuração do Certificado Wildcard (wildcard_csr.cnf)
+      ansible.builtin.template:
+        src: ../templates/wildcard_csr.cnf.j2
+        dest: /etc/nginx/ssl/wildcard_csr.cnf
+        mode: '0644'
+    - name: Gerar chave privada e CSR do certificado wildcard
+      ansible.builtin.shell: |
+        openssl req -new -nodes -newkey rsa:4096 -sha256 \
+            -keyout /etc/nginx/ssl/wildcard.{{ internal_domain }}.key \
+            -out /etc/nginx/ssl/wildcard.{{ internal_domain }}.csr \
+            -config /etc/nginx/ssl/wildcard_csr.cnf \
+            -subj "/C={{ pki_country }}/ST={{ pki_state }}/L={{ pki_locality }}/O={{ pki_organization }}/OU={{ pki_organizational_unit }}/CN={{ pki_wildcard_cn }}"
+      args:
+        creates: /etc/nginx/ssl/wildcard.{{ internal_domain }}.key
+      changed_when: false
+    - name: Assinar o CSR do certificado wildcard com a CA Intermediária
+      ansible.builtin.shell: |
+        openssl ca -batch \
+            -in /etc/nginx/ssl/wildcard.{{ internal_domain }}.csr \
+            -out /etc/nginx/ssl/wildcard.{{ internal_domain }}.crt \
+            -days {{ pki_wildcard_validity_days }} \
+            -config /etc/ssl/private/ca/openssl_intermediate.cnf \
+            -extensions v3_wildcard_cert \
+            -rand_serial
+      args:
+        creates: /etc/nginx/ssl/wildcard.{{ internal_domain }}.crt
+      changed_when: false
+    - name: Definir permissões corretas para chave e certificado wildcard
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/etc/nginx/ssl/wildcard.{{ internal_domain }}.key", mode: '0600' }
+        - { path: "/etc/nginx/ssl/wildcard.{{ internal_domain }}.crt", mode: '0644' }
+    - name: Criar cadeia de certificados completa (fullchain)
+      ansible.builtin.shell: |
+        cat /etc/nginx/ssl/wildcard.{{ internal_domain }}.crt \
+            /etc/ssl/private/ca/intermediateCA.crt \
+            /etc/ssl/private/ca/rootCA.crt \
+            > /etc/nginx/ssl/wildcard_chain.crt
+      args:
+        creates: /etc/nginx/ssl/wildcard_chain.crt
+      changed_when: false
+    - name: Gerar parâmetros Diffie-Hellman
+      ansible.builtin.shell: openssl dhparam -out /etc/nginx/ssl/dhparam.pem 2048
+      args:
+        creates: /etc/nginx/ssl/dhparam.pem
+      changed_when: false
+    - name: Definir permissões corretas para dhparam.pem
+      ansible.builtin.file:
+        path: /etc/nginx/ssl/dhparam.pem
+        mode: '0644'
+    - name: Criar arquivo de configuração principal do NGINX (nginx.conf)
+      ansible.builtin.template:
+        src: ../templates/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        mode: '0644'
+    - name: Criar arquivo de configuração de WebSocket
+      ansible.builtin.template:
+        src: ../templates/websocket.conf.j2
+        dest: /etc/nginx/conf.d/websocket.conf
+        mode: '0644'
+    - name: Desabilitar site padrão do NGINX
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      ignore_errors: true
+    - name: Criar diretório para dashboard
+      ansible.builtin.file:
+        path: /var/www/dashboard
+        state: directory
+        mode: '0755'
+        owner: www-data
+        group: www-data
+    - name: Criar página HTML do dashboard
+      ansible.builtin.template:
+        src: ../templates/dashboard_index.html.j2
+        dest: /var/www/dashboard/index.html
+        mode: '0644'
+        owner: www-data
+        group: www-data
+    - name: Criar arquivo de configuração do dashboard
+      ansible.builtin.template:
+        src: ../templates/nginx_dashboard.conf.j2
+        dest: "/etc/nginx/sites-available/dashboard.{{ internal_domain }}.conf"
+        mode: '0644'
+    - name: Habilitar site do dashboard
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/dashboard.{{ internal_domain }}.conf"
+        dest: "/etc/nginx/sites-enabled/dashboard.{{ internal_domain }}.conf"
+        state: link
+    - name: Criar configurações NGINX para serviços backend
+      ansible.builtin.template:
+        src: ../templates/nginx_service_template.conf.j2
+        dest: "/etc/nginx/sites-available/{{ item.name }}.{{ internal_domain }}.conf"
+        mode: '0644'
+      loop:
+        - { name: "gitlab", ip: "{{ gitlab_server_ip }}", port: "{{ gitlab_workhorse_port }}", registry_port: "{{ gitlab_registry_port }}" }
+        - { name: "jenkins", ip: "{{ jenkins_server_ip }}", port: "{{ jenkins_internal_port }}" }
+        - { name: "sonarqube", ip: "{{ sonarqube_server_ip }}", port: "{{ sonarqube_internal_port }}" }
+        - { name: "rancher", ip: "{{ rancher_server_ip }}", port: "80" }
+        - { name: "grafana", ip: "{{ k3s_master_ip }}", port: "3000" }
+        - { name: "argocd", ip: "{{ k3s_master_ip }}", port: "8080" }
+    - name: Habilitar configurações NGINX para backend
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/{{ item.name }}.{{ internal_domain }}.conf"
+        dest: "/etc/nginx/sites-enabled/{{ item.name }}.{{ internal_domain }}.conf"
+        state: link
+      loop:
+        - { name: "gitlab" }
+        - { name: "jenkins" }
+        - { name: "sonarqube" }
+        - { name: "rancher" }
+        - { name: "grafana" }
+        - { name: "argocd" }
+    - name: Testar configuração do NGINX
+      ansible.builtin.command: nginx -t
+      register: nginx_test_result
+      changed_when: false
+      failed_when: nginx_test_result.rc != 0
+      notify: Recarregar NGINX para aplicar as configurações
+  handlers:
+    - name: Recarregar NGINX para aplicar as configurações
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+        enabled: true
+      listen: "Recarregar NGINX para aplicar as configurações"
+- name: Distribuir Root CA para o servidor Rancher
+  hosts: rancher_standalone_server
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+  pre_tasks:
+    - name: Aguardar que o Rancher esteja acessível via SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+    - name: Recolher facts do Rancher
+      ansible.builtin.setup:
+  tasks:
+    - name: Ler conteúdo do Root CA no nginx-proxy (slurp via nginx proxy)
+      ansible.builtin.slurp:
+        src: "/etc/ssl/private/ca/rootCA.crt"
+      register: root_ca_content_slurp
+      delegate_to: "{{ groups['nginx_proxy'][0] }}"
+      become: false
+    - name: Decodificar conteúdo do Root CA
+      ansible.builtin.set_fact:
+        root_ca_content_decoded: "{{ root_ca_content_slurp.content | b64decode }}"
+    - name: Criar diretório para certificados confiáveis no Rancher Server
+      ansible.builtin.file:
+        path: /usr/local/share/ca-certificates/custom
+        state: directory
+        mode: '0755'
+    - name: Copiar Root CA para Rancher
+      ansible.builtin.copy:
+        dest: /usr/local/share/ca-certificates/custom/rootCA.crt
+        content: "{{ root_ca_content_decoded }}"
+        mode: '0644'
+    - name: Atualizar certificados CA no Rancher Server
+      ansible.builtin.command: update-ca-certificates
+      changed_when: true
+- name: Distribuir Root CA para nós K3s
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+  pre_tasks:
+    - name: Aguardar que os nós K3s estejam acessíveis via SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+    - name: Recolher facts dos nós K3s
+      ansible.builtin.setup:
+  tasks:
+    - name: Ler conteúdo do Root CA no nginx-proxy (slurp via nginx proxy)
+      ansible.builtin.slurp:
+        src: "/etc/ssl/private/ca/rootCA.crt"
+      register: root_ca_content_slurp_k
+      delegate_to: "{{ groups['nginx_proxy'][0] }}"
+      become: false
+    - name: Decodificar conteúdo do Root CA (k3s)
+      ansible.builtin.set_fact:
+        root_ca_content_k: "{{ root_ca_content_slurp_k.content | b64decode }}"
+    - name: Criar diretório para certificados confiáveis
+      ansible.builtin.file:
+        path: /usr/local/share/ca-certificates/custom
+        state: directory
+        mode: '0755'
+    - name: Copiar Root CA para os nós K3s (usando conteúdo slurp)
+      ansible.builtin.copy:
+        dest: /usr/local/share/ca-certificates/custom/rootCA.crt
+        content: "{{ root_ca_content_k }}"
+        mode: '0644'
+    - name: Atualizar certificados CA nos nós K3s
+      ansible.builtin.command: update-ca-certificates
+      changed_when: true
+- name: Criar ConfigMap para Root CA no Kubernetes
+  hosts: k3s_master
+  become: false
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+  pre_tasks:
+    - name: Aguardar que o k3s master esteja acessível via SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+    - name: Recolher facts do k3s master
+      ansible.builtin.setup:
+  tasks:
+    - name: Ler conteúdo do Root CA no nginx-proxy
+      ansible.builtin.slurp:
+        src: "/etc/ssl/private/ca/rootCA.crt"
+      register: root_ca_content_slurp_k8s
+      delegate_to: "{{ groups['nginx_proxy'][0] }}"
+      become: false
+    - name: Decodificar conteúdo do Root CA
+      ansible.builtin.set_fact:
+        root_ca_content_k8s: "{{ root_ca_content_slurp_k8s.content | b64decode }}"
+    - name: Definir caminho do kubeconfig no controlador Ansible
+      ansible.builtin.set_fact:
+        kubeconfig_path: "{{ ansible_controller_user_home | default(lookup('env', 'HOME')) }}/.kube/config"
+      delegate_to: localhost
+      run_once: true
+      become: false
+    - name: Criar ConfigMap com a Root CA (executado no controlador Ansible)
+      delegate_to: localhost
+      kubernetes.core.k8s: 
+        state: present
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: internal-ca-certificates
+            namespace: default
+          data:
+            ca.crt: |
+              {{ root_ca_content_k8s }}

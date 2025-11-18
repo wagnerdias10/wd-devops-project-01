@@ -1,0 +1,189 @@
+# ~/ansible_devops_project/playbooks/04_k3s_cluster_setup.yml
+---
+- name: Configurar K3s Master
+  hosts: k3s_master
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:
+    - name: Obter HOME do usuário no controlador Ansible
+      ansible.builtin.set_fact:
+        ansible_controller_user_home: "{{ lookup('env', 'HOME') }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Instalar K3s Master (modo servidor com cluster-init e bind-address correto)
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --cluster-init --bind-address={{ k3s_master_ip }}" sh -
+      args:
+        creates: /usr/local/bin/k3s 
+      register: k3s_master_install_result
+      changed_when: k3s_master_install_result.rc != 0
+
+    - name: Esperar K3s Master iniciar (porta 6443)
+      ansible.builtin.wait_for:
+        port: 6443
+        host: "{{ ansible_host }}"
+        timeout: 300
+        state: started
+        msg: "Timeout ao esperar o K3s Master responder na porta 6443."
+
+    - name: Obter K3s join token do Master
+      ansible.builtin.shell: cat /var/lib/rancher/k3s/server/node-token
+      register: k3s_node_token_raw
+      delegate_to: "{{ inventory_hostname }}"
+      run_once: true
+      no_log: true
+
+    - name: Salvar K3s join token para uso posterior (variável de fato)
+      ansible.builtin.set_fact:
+        k3s_token: "{{ k3s_node_token_raw.stdout }}"
+
+    - name: Instalar kubectl no Master
+      ansible.builtin.shell: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      args:
+        creates: /usr/local/bin/kubectl
+      register: kubectl_install_result
+      changed_when: kubectl_install_result.rc != 0
+
+    - name: Instalar Helm no Master
+      ansible.builtin.shell: |
+        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        chmod 700 get_helm.sh
+        ./get_helm.sh
+      args:
+        creates: /usr/local/bin/helm
+      register: helm_install_result
+      changed_when: helm_install_result.rc != 0
+
+    - name: Criar diretório de configuração para K3s (se não existir)
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Criar arquivo de configuração de registries para K3s (para o GitLab Container Registry)
+      ansible.builtin.template:
+        src: ../templates/k3s_registries.yaml.j2
+        dest: /etc/rancher/k3s/registries.yaml
+        mode: '0644'
+      notify: Reiniciar K3s Master 
+
+    - name: Criar diretório /etc/kubernetes/ssl/certs
+      ansible.builtin.file:
+        path: "/etc/kubernetes/ssl/certs"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Criar link simbólico para server-ca.crt no caminho esperado pelo cattle-cluster-agent
+      ansible.builtin.file:
+        src: "/var/lib/rancher/k3s/server/tls/server-ca.crt" 
+        dest: "/etc/kubernetes/ssl/certs/serverca"          
+        state: link
+        force: yes
+      notify: Reiniciar K3s Master 
+    
+    - name: Garantir diretório .kube no controlador Ansible
+      ansible.builtin.file:
+        path: "{{ ansible_controller_user_home }}/.kube"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Ler conteúdo do kubeconfig no K3s Master
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: k3s_kubeconfig_slurp
+      delegate_to: "{{ inventory_hostname }}" 
+
+    - name: Substituir 127.0.0.1 pelo IP do K3s Master no conteúdo do kubeconfig
+      ansible.builtin.set_fact:
+        k3s_kubeconfig_content_modified: "{{ (k3s_kubeconfig_slurp.content | b64decode) | regex_replace('127\\.0\\.0\\.1', k3s_master_ip) }}"
+
+    - name: Salvar kubeconfig modificado no controlador Ansible
+      ansible.builtin.copy:
+        content: "{{ k3s_kubeconfig_content_modified }}"
+        dest: "{{ ansible_controller_user_home }}/.kube/config"
+        mode: '0600'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+  handlers:
+    - name: Reiniciar K3s Master
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+        daemon_reload: yes
+      listen: "Reiniciar K3s Master"
+
+- name: Configurar K3s Workers
+  hosts: k3s_workers
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml
+
+  tasks:
+    - name: Instalar K3s Worker
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | K3S_URL="https://{{ k3s_master_ip }}:6443" K3S_TOKEN="{{ hostvars[groups['k3s_master'][0]].k3s_token }}" sh -
+      args:
+        creates: /usr/local/bin/k3s 
+      register: k3s_worker_install_result
+      changed_when: k3s_worker_install_result.rc != 0
+
+    - name: Instalar kubectl nos Workers
+      ansible.builtin.shell: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      args:
+        creates: /usr/local/bin/kubectl
+      register: kubectl_worker_install_result
+      changed_when: kubectl_worker_install_result.rc != 0
+
+    - name: Instalar Helm nos Workers
+      ansible.builtin.shell: |
+        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        chmod 700 get_helm.sh
+        ./get_helm.sh
+      args:
+        creates: /usr/local/bin/helm
+      register: helm_worker_install_result
+      changed_when: helm_worker_install_result.rc != 0
+
+    - name: Criar diretório de configuração para K3s (se não existir)
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Criar arquivo de configuração de registries para K3s (para o GitLab Container Registry)
+      ansible.builtin.template:
+        src: ../templates/k3s_registries.yaml.j2
+        dest: /etc/rancher/k3s/registries.yaml
+        mode: '0644'
+      notify: Reiniciar K3s Worker
+
+  handlers:
+    - name: Reiniciar K3s Worker
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: restarted
+        daemon_reload: yes
+      listen: "Reiniciar K3s Worker"

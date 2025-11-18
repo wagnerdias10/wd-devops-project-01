@@ -1,0 +1,75 @@
+# openssl_intermediate.cnf.j2
+# Configuracao para a Criacao da CA Intermediaria
+[ ca ]
+default_ca = CA_default
+
+[ CA_default ]
+dir               = /etc/ssl/private/ca
+certs             = $dir/certs
+crl_dir           = $dir/crl
+new_certs_dir     = $dir/newcerts
+database          = $dir/index.txt
+serial            = $dir/serial
+RANDFILE          = $dir/private/.rand
+private_key       = $dir/intermediateCA.key
+certificate       = $dir/intermediateCA.crt
+crlnumber         = $dir/crlnumber
+crl               = $dir/crl.pem
+crl_extensions    = crl_ext
+default_days      = {{ pki_intermediate_validity_days }}
+default_crl_days  = {{ pki_crl_days }}
+default_md        = sha256
+preserve          = no
+policy            = policy_strict
+
+[ policy_strict ]
+countryName             = match
+stateOrProvinceName     = match
+organizationName        = match
+organizationalUnitName  = optional
+commonName              = supplied
+emailAddress            = optional
+
+[ req ]
+default_bits        = 4096
+default_md          = sha256
+default_keyfile     = /etc/ssl/private/ca/intermediateCA.key
+distinguished_name  = req_distinguished_name
+x509_extensions     = v3_intermediate_ca
+string_mask         = utf8only
+
+[ req_distinguished_name ]
+countryName                     = Country Name (2 letter code)
+countryName_default             = {{ pki_country }}
+stateOrProvinceName             = State or Province Name (full name)
+stateOrProvinceName_default     = {{ pki_state }}
+localityName                    = Locality Name (eg, city)
+localityName_default            = {{ pki_locality }}
+0.organizationName              = Organization Name (eg, company)
+0.organizationName_default      = {{ pki_organization }}
+organizationalUnitName          = Organizational Unit Name (eg, section)
+organizationalUnitName_default  = {{ pki_organizational_unit }}
+commonName                      = Common Name (e.g. server FQDN or YOUR name)
+commonName_default              = {{ pki_intermediate_cn }}
+
+[ v3_intermediate_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical,CA:true,pathlen:0
+keyUsage               = critical,digitalSignature,cRLSign,keyCertSign
+
+[ v3_wildcard_cert ] # Usado para assinar o certificado wildcard
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @wildcard_alt_names
+
+[ wildcard_alt_names ] # Lista de SANs para o certificado wildcard
+{% for san_entry in pki_wildcard_sans_list %}
+{{ san_entry }}
+{% endfor %}
+
+[ crl_ext ] # Extensoes para a CRL (Certificate Revocation List)
+authorityKeyIdentifier = keyid:always,issuer

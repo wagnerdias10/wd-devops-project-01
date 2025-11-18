@@ -1,0 +1,180 @@
+```gitignore
+# Ansible specific
+*.retry
+*.vault
+vault_pass.txt
+.vault_password
+ansible.cfg.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+ansible.log
+
+# Kubernetes
+kubeconfig
+.kube/
+*.kubeconfig
+
+# Terraform (if used)
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# Docker
+docker-compose.override.yml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Backup files
+backup/
+*.bak
+*.backup
+
+# Certificates (except templates)
+*.key
+*.crt
+*.pem
+!templates/*.crt
+!templates/*.key
+!templates/*.pem
+
+# Sensitive data
+secrets/
+*.secret
+*.token
+.env
+.env.local
+
+# GitLab CI
+.gitlab-ci.yml.local
+
+# Binary files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Documentation builds
+_site/
+.sass-cache/
+.jekyll-cache/
+
+# Node.js (if any frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local overrides
+local.yml
+local_vars.yml
+host_vars/local/
+
+# Cache directories
+.cache/
+.ansible/
+.helm/
+
+# Helm
+charts/
+*.tgz
+
+# K3s specific
+/var/lib/rancher/
+/opt/rancher/
+
+# GitLab backups
+gitlab-backup-*
+
+# SonarQube
+.sonar/
+sonar-scanner-*
+
+# Jenkins
+.jenkins/
+jobs/
+plugins/
+
+# SSL certificates (generated)
+ssl/
+certificates/
+!files/wd-root-ca.crt  # Keep the root CA template
+
+# Netplan configurations (generated)
+/etc/netplan/*.yaml
+!/etc/netplan/00-installer-config.yaml
+
+# Systemd generated files
+/etc/systemd/system/multi-user.target.wants/
+
+# Nginx generated configs
+/etc/nginx/sites-enabled/*
+!/etc/nginx/sites-enabled/dashboard.wd.local.conf
+!/etc/nginx/sites-enabled/*.wd.local.conf
+
+# Database dumps
+*.sql
+*.dump
+
+# Backup of configuration files
+*.orig
+*.old
+
+# Temporary Ansible files
+.ansible/tmp/
+.ansible/tmp_facts/
+
+# Inventory backups
+inventory.bak
+inventory.old
+
+# Role dependencies (if using galaxy)
+roles/galaxy/
+requirements.yml.lock
+
+# Molecule testing
+.molecule/
+*.tox/
+
+# Packer (if used)
+packer_cache/
+*.box
+
+# Vagrant (if used)
+.vagrant/
+Vagrantfile
+```

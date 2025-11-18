@@ -1,0 +1,120 @@
+# ~/ansible_devops_project/playbooks/03_gitlab_setup.yml
+---
+- name: Instalar e Configurar GitLab
+  hosts: gitlab_server
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/secrets.yml  
+
+  tasks:  
+    - name: Instalar dependências do GitLab
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Adicionar chave GPG oficial do GitLab
+      ansible.builtin.apt_key:
+        url: https://packages.gitlab.com/gpg.key
+        state: present
+
+    - name: Adicionar repositório GitLab CE
+      ansible.builtin.apt_repository:
+        repo: "deb https://packages.gitlab.com/gitlab/gitlab-ce/ubuntu/ {{ ansible_distribution_release }} main"
+        state: present
+        filename: gitlab_gitlab-ce.list
+
+    - name: Atualizar cache de pacotes após adicionar repositório GitLab
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Instalar GitLab CE
+      ansible.builtin.apt:
+        name: gitlab-ce
+        state: present
+      register: gitlab_install_result
+      until: gitlab_install_result is success
+      retries: 5
+      delay: 10
+    
+    - name: Criar diretório de backup para configuração do GitLab
+      ansible.builtin.file:
+        path: /etc/gitlab/backup
+        state: directory
+        mode: '0755'
+
+    - name: Fazer backup do arquivo gitlab.rb original (se já existir)
+      ansible.builtin.copy:
+        src: /etc/gitlab/gitlab.rb
+        dest: "/etc/gitlab/backup/gitlab.rb.orig-{{ ansible_date_time.iso8601_basic_short }}"
+        remote_src: true
+        force: false
+
+    - name: Copiar configuração gitlab.rb ajustada para reverse proxy
+      ansible.builtin.template:
+        src: ../templates/gitlab.rb.j2
+        dest: /etc/gitlab/gitlab.rb
+        mode: '0600'
+        force: true
+      notify: Reconfigurar GitLab
+
+    - name: Parar e desabilitar NGINX interno do GitLab (se estiver ativo)
+      ansible.builtin.command: gitlab-ctl stop nginx && gitlab-ctl disable nginx
+      args:
+        warn: false
+      changed_when: false
+      failed_when: false
+
+    - name: Criar diretório para certificados confiáveis do GitLab
+      ansible.builtin.file:
+        path: /etc/gitlab/trusted-certs
+        state: directory
+        mode: '0755'
+      notify: Reconfigurar GitLab
+    
+    - name: Reconfigurar GitLab antes de obter a senha inicial
+      ansible.builtin.command: gitlab-ctl reconfigure
+      changed_when: false
+
+    - name: Aguardar criação do arquivo de senha inicial do GitLab
+      ansible.builtin.wait_for:
+        path: /etc/gitlab/initial_root_password
+        timeout: 180
+        msg: "Arquivo de senha inicial do root ainda não foi criado pelo GitLab."
+    
+    - name: Obter senha inicial do root do GitLab
+      ansible.builtin.shell: cat /etc/gitlab/initial_root_password
+      register: gitlab_initial_root_password_output
+      changed_when: false
+      no_log: true
+
+    - name: Exibir senha inicial do root do GitLab
+      ansible.builtin.debug:
+        msg: "🔐 A senha inicial do usuário 'root' do GitLab é: {{ gitlab_initial_root_password_output.stdout | default('Não encontrada ou já removida') }}"
+      when: gitlab_initial_root_password_output.stdout | length > 0
+  
+  handlers:
+    - name: Reconfigurar GitLab
+      ansible.builtin.command: gitlab-ctl reconfigure
+      args:
+        warn: false
+
+    - name: Reiniciar todos os serviços do GitLab após reconfiguração
+      ansible.builtin.command: gitlab-ctl restart
+      args:
+        warn: false
+
+    - name: Esperar GitLab Workhorse estar pronto na porta {{ gitlab_workhorse_port }}
+      ansible.builtin.wait_for:
+        port: "{{ gitlab_workhorse_port }}"
+        host: "127.0.0.1"
+        timeout: 300
+        delay: 10
+        state: started
+        msg: "Timeout ao esperar o GitLab Workhorse responder."
